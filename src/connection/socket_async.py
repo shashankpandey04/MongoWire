@@ -1,6 +1,5 @@
 import asyncio
 
-
 class AsyncSocket:
     def __init__(self, reader, writer):
         self.reader = reader
@@ -16,8 +15,11 @@ class AsyncSocket:
         await self.writer.drain()
 
     async def receive(self, buffer_size=4096):
-        return await self.reader.read(buffer_size)
+        data = await self.reader.read(buffer_size)
+        return data
 
     async def close(self):
-        self.writer.close()
-        await self.writer.wait_closed()
+        if not self.writer.is_closing():
+            self.writer.close()
+            await self.writer.wait_closed()
+

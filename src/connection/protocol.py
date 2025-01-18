@@ -3,47 +3,70 @@ import struct
 
 async def send_command(connection, bson_command):
     try:
-        # Check if bson_command is a coroutine and await it if necessary
         if asyncio.iscoroutine(bson_command):
-            bson_command = await bson_command()
+            bson_command = await bson_command
 
-        # Ensure bson_command is in bytes
         if not isinstance(bson_command, bytes):
             raise ValueError("bson_command must be a bytes-like object.")
 
-        message_length = 16 + len(bson_command)
-        header = struct.pack("<iiii", message_length, 0, 0, 2013)  # MongoDB OP_MSG
-        message = header + bson_command
+        # MongoDB OP_MSG structure:
+        # - Header (16 bytes)
+        # - Flagbits (4 bytes)
+        # - Section kind byte (1 byte)
+        # - BSON document
+        request_id = 1
+        message_length = 21 + len(bson_command)  # 16 (header) + 4 (flagbits) + 1 (section) + BSON
+
+        # Construct header
+        header = struct.pack("<iiii", 
+            message_length,    # Total message length
+            request_id,        # Request ID
+            0,                # Response To
+            2013              # OP_MSG opcode
+        )
+
+        flags = struct.pack("<i", 0)  # Flagbits (4 bytes)
+        section = b'\x00'  # Section kind byte (1 byte)
+
+        # Construct the full message
+        message = header + flags + section + bson_command
         
-        print(f"Sending message: {message}")  # Debugging line
-
-        # Write the message to the connection
-        if connection.writer:
-            connection.writer.write(message)
-            await connection.writer.drain()
-        else:
-            raise ValueError("Connection writer is None.")
-
-        # Debugging: Ensure the message is written
-        print("Message sent to MongoDB.")
-
-        # Read the first 4 bytes from the response to get the length
-        header = await connection.reader.read(4)
-        print(f"Received header: {header}")  # Debugging line
-
-        if len(header) < 4:
-            raise ValueError(f"Incomplete response header from MongoDB. Received {len(header)} bytes.")
+        print(f"Sending message length: {message_length}")
+        print(f"BSON command length: {len(bson_command)}")
         
-        full_length = struct.unpack("<i", header)[0]  # Get the full message length from the header
-        remaining_length = full_length - 4  # Subtract header length from total length
+        # Send the message
+        await connection.send(message)
+        print("Message sent, waiting for response...")
 
-        # Read the rest of the response data
-        response = await connection.reader.read(remaining_length)
-        if len(response) < remaining_length:
-            raise ValueError(f"Incomplete response data. Expected {remaining_length} bytes, got {len(response)} bytes.")
+        # Read the response header (16 bytes)
+        response_header = await connection.receive(16)
+        print(f"Received response header length: {len(response_header)}")
         
-        print(f"Received response: {response}")  # Debugging line
-        return header + response  # Return the full response including header and data
+        if len(response_header) < 16:
+            raise ValueError(f"Incomplete response header. Received {len(response_header)} bytes")
+
+        # Parse response header
+        resp_length, resp_req_id, resp_to, resp_code = struct.unpack("<iiii", response_header)
+        print(f"Response length: {resp_length}, Request ID: {resp_req_id}, Response To: {resp_to}, Op Code: {resp_code}")
+
+        # Read the rest of the response (including flagbits and sections)
+        remaining_length = resp_length - 16
+        print(f"Reading remaining {remaining_length} bytes...")
+        
+        response_body = b""
+        while len(response_body) < remaining_length:
+            chunk = await connection.receive(min(4096, remaining_length - len(response_body)))
+            if not chunk:
+                break
+            response_body += chunk
+            print(f"Received chunk of {len(chunk)} bytes")
+
+        if len(response_body) < remaining_length:
+            raise ValueError(f"Incomplete response body. Expected {remaining_length} bytes, got {len(response_body)}")
+
+        print(f"Full response received: {len(response_header + response_body)} bytes")
+        return response_header + response_body
+
     except Exception as e:
-        print(f"Error in send_command: {e}")  # Debugging line
+        print(f"Error in send_command: {str(e)}")
         raise

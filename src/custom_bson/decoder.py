@@ -1,4 +1,6 @@
+# decoder.py
 import struct
+from datetime import datetime, timezone
 from .types import ObjectId
 
 async def decode(data):
@@ -7,26 +9,26 @@ async def decode(data):
     """
     return await decode_document(data)
 
-import struct
-
 async def decode_document(bson_data):
-    # Check that the BSON data is long enough to unpack the length
+    """
+    Decodes a BSON document from bytes.
+    """
     if len(bson_data) < 4:
         raise ValueError("BSON data is too short to decode.")
     
-    # Unpack the first 4 bytes to get the length of the full document
     length = struct.unpack("<i", bson_data[:4])[0]
     
-    # Check if the full BSON document length matches the data length
     if len(bson_data) < length:
         raise ValueError(f"BSON data is incomplete. Expected {length} bytes, got {len(bson_data)}.")
+    
+    data = bson_data[4:length-1]  # -1 to exclude the trailing null byte
     
     document = {}
     while data:
         element, data = await decode_element(data)
         document.update(element)
+    
     return document
-
 
 async def decode_element(data):
     """
@@ -41,6 +43,13 @@ async def decode_element(data):
         length = struct.unpack("<i", data[:4])[0]
         value = data[4:4 + length - 1].decode("utf-8")  # Exclude null terminator
         return {key: value}, data[4 + length:]
+    elif element_type == 0x08:  # Boolean
+        value = bool(data[0])
+        return {key: value}, data[1:]
+    elif element_type == 0x09:  # UTC datetime
+        milliseconds = struct.unpack("<q", data[:8])[0]
+        value = datetime.fromtimestamp(milliseconds / 1000, timezone.utc)
+        return {key: value}, data[8:]
     elif element_type == 0x10:  # int32
         value = struct.unpack("<i", data[:4])[0]
         return {key: value}, data[4:]
@@ -64,4 +73,4 @@ async def decode_element(data):
     elif element_type == 0x0A:  # Null
         return {key: None}, data
     else:
-        raise TypeError(f"Unsupported BSON type: {element_type}")
+        raise TypeError(f"Unsupported BSON type: 0x{element_type:02x}, key: {key}")
